@@ -1,0 +1,18 @@
+{
+  "spec_bundle": "rxdb-extractor-argentina2022",
+  "version": "0.1-draft",
+  "date": "2026-09-01",
+  "production_backend": "number_freq",
+  "generic_core": {
+    "canonical_output": "parquet",
+    "preferred_runtime": "RedEngine 1.3.0-final",
+    "required_capabilities": ["selection", "number", "inherited_define", "freq"],
+    "optional_capabilities": ["cmpcode"]
+  },
+  "first_adapter": "argentina-censo2022",
+  "first_milestone": {
+    "database": "Base_VP/cpv2022.rxdb",
+    "selection": {"entity": "RADIO", "code": "061471101"},
+    "expected": {"VIVIENDA": 73, "HOGAR": 56, "PERSONA": 137}
+  }
+}
