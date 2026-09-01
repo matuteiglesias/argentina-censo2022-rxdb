@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argentina-censo2022-rxdb"
+version = "0.0.1"
+description = "Argentina Census 2022 adapter for rxdb-extractor"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Matias Iglesias"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+arg-censo2022 = "argentina_censo2022_rxdb.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
