@@ -9,6 +9,10 @@ def test_vp_profile_keeps_domain_policy_outside_generic_core():
     assert VP_PROFILE.selection_entity == "RADIO"
     assert VP_PROFILE.identity_scope == "RADIO"
     assert VP_PROFILE.scope_field == "XRADIO"
+    assert VP_PROFILE.parent_map["RADIO"] == "FRAC"
+    assert VP_PROFILE.parent_map["VIVIENDA"] == "RADIO"
+    assert VP_PROFILE.parent_map["HOGAR"] == "VIVIENDA"
+    assert VP_PROFILE.parent_map["PERSONA"] == "HOGAR"
     assert VP_PROFILE.id_fields == {
         "VIVIENDA": "XVID",
         "HOGAR": "XHID",
@@ -36,3 +40,4 @@ def test_cli_profile_is_machine_readable(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["name"] == "argentina-censo2022-vp"
     assert payload["source_database"] == "VP"
+    assert payload["parent_map"]["PERSONA"] == "HOGAR"
