@@ -35,6 +35,7 @@ class CensusProfile:
     identity_scope: str
     scope_field: str
     geography_entities: tuple[str, ...]
+    parent_map: dict[str, str | None]
     id_fields: dict[str, str]
     entities: tuple[EntityPolicy, ...]
     foreign_keys: tuple[ForeignKeyPolicy, ...]
@@ -50,6 +51,19 @@ VP_PROFILE = CensusProfile(
     identity_scope="RADIO",
     scope_field="XRADIO",
     geography_entities=("PROV", "DPTO", "FRAC", "RADIO"),
+    # redatamx's current public entity inventory is flat and does not expose parent
+    # links, so the adapter records the hierarchy independently validated against the
+    # Census 2022 database. A runtime that does expose parents must agree with it.
+    parent_map={
+        "CPV2022": None,
+        "PROV": "CPV2022",
+        "DPTO": "PROV",
+        "FRAC": "DPTO",
+        "RADIO": "FRAC",
+        "VIVIENDA": "RADIO",
+        "HOGAR": "VIVIENDA",
+        "PERSONA": "HOGAR",
+    },
     id_fields={
         "VIVIENDA": "XVID",
         "HOGAR": "XHID",
