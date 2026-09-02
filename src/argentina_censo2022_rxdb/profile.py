@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -108,3 +108,20 @@ VP_PROFILE = CensusProfile(
         ForeignKeyPolicy("PERSONA", "vivienda_key", "VIVIENDA", "vivienda_key"),
     ),
 )
+
+# Preferred national profile when @cmpcode is available (RedEngine >= 1.2,
+# qualified target runtime 1.3).  Selection is coarser, but record identity stays
+# RADIO-scoped, so the exact same vivienda/hogar/persona keys are produced while
+# reducing the partition count from roughly 66k RADIOs to roughly 6.5k FRACs.
+# The generic core deliberately rejects this profile on the RedEngine-1.1 fallback
+# because selection_entity != identity_scope without @cmpcode cannot recover XRADIO.
+VP_FRAC_PROFILE = replace(
+    VP_PROFILE,
+    name="argentina-censo2022-vp-frac",
+    selection_entity="FRAC",
+)
+
+PROFILES = {
+    "vp": VP_PROFILE,
+    "vp-frac": VP_FRAC_PROFILE,
+}
