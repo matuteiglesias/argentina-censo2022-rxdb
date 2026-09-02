@@ -5,7 +5,8 @@ from pathlib import Path
 from .frame import CensusFrameBuildError, build_vp_slice_frame
 from .frame_partitions import build_vp_partition_frame
 from .manifest import build_source_manifest
-from .profile import VP_PROFILE
+from .partition_inventory import build_partition_inventory
+from .profile import PROFILES
 from .sources import discover_sources
 
 
@@ -27,7 +28,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     profile = sub.add_parser("profile", help="print a machine-readable extraction profile")
-    profile.add_argument("name", choices=("vp",))
+    profile.add_argument("name", choices=tuple(PROFILES))
+
+    inventory = sub.add_parser(
+        "partition-inventory",
+        help="normalize an official geography source into an rxdb extract-many inventory",
+    )
+    inventory.add_argument("source")
+    inventory.add_argument("output")
+    inventory.add_argument("--level", required=True, choices=("RADIO", "FRAC"))
+    inventory.add_argument(
+        "--column",
+        help="source column containing the requested code (required for CSV/TSV/Parquet)",
+    )
+    inventory.add_argument(
+        "--expected-count",
+        type=int,
+        help="fail unless the deduplicated partition count matches this control",
+    )
 
     frame = sub.add_parser(
         "frame",
@@ -43,11 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     partition_frame = sub.add_parser(
         "frame-partitions",
-        help="build one research.census-frame/v1 directly from validated RADIO partitions",
+        help="build one research.census-frame/v1 directly from validated VP partitions",
     )
     partition_frame.add_argument(
         "partition_root",
-        help="rxdb extract-many output root containing completed RADIO slice directories",
+        help="rxdb extract-many output root containing completed RADIO or FRAC slices",
     )
     partition_frame.add_argument("output_root", help="directory for immutable frame releases")
     partition_frame.add_argument(
@@ -90,7 +108,31 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "profile":
-            print(json.dumps(VP_PROFILE.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(PROFILES[args.name].to_dict(), indent=2, sort_keys=True))
+            return 0
+
+        if args.command == "partition-inventory":
+            destination = build_partition_inventory(
+                Path(args.source),
+                Path(args.output),
+                level=args.level,
+                column=args.column,
+                expected_count=args.expected_count,
+            )
+            payload = json.loads(destination.read_text(encoding="utf-8"))
+            print(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "output": str(destination),
+                        "partition_level": payload["partition_level"],
+                        "partition_count": payload["partition_count"],
+                        "source_sha256": payload["source"]["sha256"],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
 
         if args.command == "frame":
