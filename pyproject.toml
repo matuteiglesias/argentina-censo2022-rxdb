@@ -9,7 +9,7 @@ description = "Argentina Census 2022 adapter for rxdb-extractor"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Matias Iglesias"}]
-dependencies = []
+dependencies = ["pyarrow>=15"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
