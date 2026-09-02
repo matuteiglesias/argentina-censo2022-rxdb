@@ -153,7 +153,13 @@ def test_partition_frame_rejects_tampered_source_artifact(tmp_path: Path) -> Non
     run.mkdir()
     partition = run / "radio=061471101"
     _write_partition(partition, "061471101")
-    with (partition / "persona.parquet").open("ab") as stream:
-        stream.write(b"tamper")
+
+    # Keep a perfectly readable Parquet file but change its bytes after the slice
+    # manifest was written. The partition-frame custody check must catch this.
+    person_path = partition / "persona.parquet"
+    rows = pq.read_table(person_path).to_pylist()
+    rows[0]["P02"] = 99
+    pq.write_table(pa.Table.from_pylist(rows), person_path)
+
     with pytest.raises(CensusFrameBuildError, match="artifact_hash_mismatch"):
         build_vp_partition_frame(run, tmp_path / "frames")
