@@ -7,7 +7,6 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 from .frame import (
     FRAME_ARTIFACTS,
@@ -25,23 +24,26 @@ from .frame import (
     sha256_file,
 )
 
-PARTITION_FRAME_BUILDER_VERSION = "arg-cpv2022-vp-partitions-parquet/v1"
+PARTITION_FRAME_BUILDER_VERSION = "arg-cpv2022-vp-partitions-parquet/v2"
+SUPPORTED_SELECTION_ENTITIES = {"RADIO", "FRAC"}
 
 
 @dataclass(frozen=True)
 class VPPartition:
+    selection_entity: str
     selection_code: str
     root: Path
     manifest: dict[str, object]
 
 
 def discover_vp_partitions(root: Path) -> tuple[VPPartition, ...]:
-    """Discover completed extractor slice directories below one run root."""
+    """Discover a homogeneous set of completed VP RADIO or FRAC slices."""
     root = Path(root).expanduser().resolve()
     if not root.is_dir():
         raise CensusFrameBuildError(f"partition_root_missing:{root}")
     output: list[VPPartition] = []
-    seen_codes: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    selection_entity: str | None = None
     for child in sorted(root.iterdir(), key=lambda p: p.name):
         if not child.is_dir() or child.name.startswith("."):
             continue
@@ -53,12 +55,21 @@ def discover_vp_partitions(root: Path) -> tuple[VPPartition, ...]:
             raise CensusFrameBuildError(f"partition_missing_selection:{child.name}")
         entity = selection.get("entity")
         code = selection.get("code")
-        if entity != "RADIO" or not isinstance(code, str) or not code:
-            raise CensusFrameBuildError(f"partition_not_radio_slice:{child.name}")
-        if code in seen_codes:
-            raise CensusFrameBuildError(f"duplicate_radio_partition:{code}")
-        seen_codes.add(code)
-        output.append(VPPartition(code, child, manifest))
+        if entity not in SUPPORTED_SELECTION_ENTITIES:
+            raise CensusFrameBuildError(f"partition_not_supported_vp_slice:{child.name}")
+        if not isinstance(code, str) or not code:
+            raise CensusFrameBuildError(f"partition_missing_selection_code:{child.name}")
+        if selection_entity is None:
+            selection_entity = entity
+        elif entity != selection_entity:
+            raise CensusFrameBuildError(
+                f"mixed_partition_selection_entities:{selection_entity}:{entity}"
+            )
+        key = (entity, code)
+        if key in seen:
+            raise CensusFrameBuildError(f"duplicate_{entity.lower()}_partition:{code}")
+        seen.add(key)
+        output.append(VPPartition(entity, code, child, manifest))
     if not output:
         raise CensusFrameBuildError("partition_root_contains_no_valid_vp_slices")
     output.sort(key=lambda item: item.selection_code)
@@ -80,7 +91,6 @@ def _entity_artifact_record(partition: VPPartition, entity: str) -> dict[str, ob
 
 
 def _verify_partition_artifacts(partition: VPPartition) -> dict[str, object]:
-    """Verify actual Parquet bytes against each slice manifest before merging."""
     result: dict[str, object] = {}
     for entity in ("VIVIENDA", "HOGAR", "PERSONA"):
         artifact = _entity_artifact_record(partition, entity)
@@ -165,7 +175,7 @@ def _partition_index(
 ) -> dict[str, object]:
     return {
         "partition_count": len(partitions),
-        "selection_entity": "RADIO",
+        "selection_entity": partitions[0].selection_entity,
         "partitions": [
             {
                 "selection_code": partition.selection_code,
@@ -178,25 +188,45 @@ def _partition_index(
     }
 
 
+def _validate_partition_radio(partition: VPPartition, radio: str) -> None:
+    if len(radio) != 9 or not radio.isdigit():
+        raise CensusFrameBuildError(
+            f"partition_invalid_radio_identity:{partition.selection_code}:{radio!r}"
+        )
+    if partition.selection_entity == "RADIO":
+        valid = radio == partition.selection_code
+    else:
+        valid = (
+            len(partition.selection_code) == 7
+            and partition.selection_code.isdigit()
+            and radio.startswith(partition.selection_code)
+        )
+    if not valid:
+        raise CensusFrameBuildError(
+            f"partition_geography_mismatch:{partition.selection_entity}:"
+            f"{partition.selection_code}:{radio}"
+        )
+
+
 def build_vp_partition_frame(
     partition_root: Path,
     output_root: Path,
     *,
     source_release_label: str = "unknown",
 ) -> Path:
-    """Build one immutable sampler frame directly from validated RADIO partitions.
+    """Build one immutable sampler frame from validated VP partitions.
 
-    No giant intermediate merged extraction is created: relation indexes are built
-    in temporary SQLite and source Parquet batches are streamed directly into the
-    frame payload files.
+    RADIO is the compatibility partition strategy. FRAC is the preferred strategy
+    when ``@cmpcode`` is available: selection is coarser but ``XRADIO`` remains the
+    record identity scope. No giant merged extract is created; relation indexes are
+    built in temporary SQLite and payload Parquets are streamed partition by partition.
     """
-    import pyarrow.parquet as pq
-
     source = Path(partition_root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
     if output_root == source or source in output_root.parents:
         raise CensusFrameBuildError("unsafe_output_path_inside_partition_root")
     partitions = discover_vp_partitions(source)
+    selection_entity = partitions[0].selection_entity
 
     first_schemas = _partition_schemas(partitions[0])
     _require_columns(first_schemas["vivienda"].names, {"vivienda_key", "XRADIO"}, "VIVIENDA")
@@ -211,6 +241,8 @@ def build_vp_partition_frame(
         "PERSONA",
     )
     geography_policy = _frame_geography_policy(first_schemas["hogar"].names)
+    if selection_entity == "FRAC" and geography_policy != "redengine-dpto-cmpcode/v1":
+        raise CensusFrameBuildError("frac_partitions_require_cmpcode_geography")
 
     artifact_evidence: dict[str, dict[str, object]] = {}
     for partition in partitions:
@@ -233,6 +265,7 @@ def build_vp_partition_frame(
         "country": "ARG",
         "census_vintage": 2022,
         "source_release_label": source_release_label,
+        "selection_entity": selection_entity,
         "geography_policy": geography_policy,
         "run_source_hash": run_manifest.get("source_hash") if run_manifest else None,
         "partition_semantic_hashes": [
@@ -262,11 +295,27 @@ def build_vp_partition_frame(
             conn.execute("PRAGMA journal_mode=OFF")
             conn.execute("PRAGMA synchronous=OFF")
             conn.execute("PRAGMA temp_store=FILE")
+            conn.execute("CREATE TABLE vivienda (viv TEXT PRIMARY KEY, radio TEXT NOT NULL)")
             conn.execute(
                 "CREATE TABLE hogar (hh TEXT PRIMARY KEY, viv TEXT NOT NULL, dept TEXT NOT NULL, radio TEXT NOT NULL)"
             )
             conn.execute("CREATE TABLE person (person TEXT PRIMARY KEY, hh TEXT NOT NULL)")
             conn.execute("CREATE TABLE hh_counts (hh TEXT PRIMARY KEY, n INTEGER NOT NULL)")
+
+            try:
+                for partition in partitions:
+                    for row in _iter_parquet_rows(
+                        partition.root / "vivienda.parquet", ["vivienda_key", "XRADIO"]
+                    ):
+                        viv = str(row.get("vivienda_key") or "")
+                        radio = str(row.get("XRADIO") or "")
+                        if not viv or not radio:
+                            raise CensusFrameBuildError("vivienda:empty_relational_identity")
+                        _validate_partition_radio(partition, radio)
+                        conn.execute("INSERT INTO vivienda(viv,radio) VALUES (?,?)", (viv, radio))
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise CensusFrameBuildError("duplicate_dwelling_key_across_partitions") from exc
 
             try:
                 for partition in partitions:
@@ -281,10 +330,7 @@ def build_vp_partition_frame(
                         radio = str(row.get("XRADIO") or "")
                         if not hh or not viv or not radio:
                             raise CensusFrameBuildError("hogar:empty_relational_identity")
-                        if radio != partition.selection_code:
-                            raise CensusFrameBuildError(
-                                f"partition_radio_mismatch:{partition.selection_code}:{radio}"
-                            )
+                        _validate_partition_radio(partition, radio)
                         dept = _department_id(row, geography_policy)
                         conn.execute(
                             "INSERT INTO hogar(hh,viv,dept,radio) VALUES (?,?,?,?)",
@@ -297,12 +343,15 @@ def build_vp_partition_frame(
             try:
                 for partition in partitions:
                     for row in _iter_parquet_rows(
-                        partition.root / "persona.parquet", ["persona_key", "hogar_key"]
+                        partition.root / "persona.parquet",
+                        ["persona_key", "hogar_key", "XRADIO"],
                     ):
                         person = str(row.get("persona_key") or "")
                         hh = str(row.get("hogar_key") or "")
-                        if not person or not hh:
+                        radio = str(row.get("XRADIO") or "")
+                        if not person or not hh or not radio:
                             raise CensusFrameBuildError("persona:empty_relational_identity")
+                        _validate_partition_radio(partition, radio)
                         conn.execute("INSERT INTO person(person,hh) VALUES (?,?)", (person, hh))
                         conn.execute(
                             "INSERT INTO hh_counts(hh,n) VALUES (?,1) "
@@ -313,12 +362,17 @@ def build_vp_partition_frame(
             except sqlite3.IntegrityError as exc:
                 raise CensusFrameBuildError("duplicate_person_key_across_partitions") from exc
 
+            orphan_hogar_viv = conn.execute(
+                "SELECT COUNT(*) FROM hogar h LEFT JOIN vivienda v ON v.viv=h.viv WHERE v.viv IS NULL"
+            ).fetchone()[0]
             orphan_people = conn.execute(
                 "SELECT COUNT(*) FROM person p LEFT JOIN hogar h ON h.hh=p.hh WHERE h.hh IS NULL"
             ).fetchone()[0]
             empty_households = conn.execute(
                 "SELECT COUNT(*) FROM hogar h LEFT JOIN hh_counts c ON c.hh=h.hh WHERE c.hh IS NULL"
             ).fetchone()[0]
+            if orphan_hogar_viv:
+                raise CensusFrameBuildError(f"hogar:orphan_dwellings:{orphan_hogar_viv}")
             if orphan_people:
                 raise CensusFrameBuildError(f"persona:orphan_households:{orphan_people}")
             if empty_households:
@@ -348,6 +402,7 @@ def build_vp_partition_frame(
                 )
             ]
             _write_rows(work / "donor_person_mass.parquet", iter(donor_rows))
+            dwelling_count = conn.execute("SELECT COUNT(*) FROM vivienda").fetchone()[0]
             person_count = conn.execute("SELECT COUNT(*) FROM person").fetchone()[0]
             if sum(int(row["donor_person_mass"]) for row in donor_rows) != person_count:
                 raise CensusFrameBuildError("donor_person_mass_does_not_sum_to_person_count")
@@ -355,7 +410,7 @@ def build_vp_partition_frame(
             conn.close()
 
         payload = work / "payload"
-        dwelling_count = _copy_partition_payloads(
+        payload_dwellings = _copy_partition_payloads(
             partitions,
             entity="vivienda",
             destination=payload / "vivienda.parquet",
@@ -379,7 +434,11 @@ def build_vp_partition_frame(
                 ("frame_household_id", "hogar_key"),
             ),
         )
-        if payload_households != household_count or payload_persons != person_count:
+        if (
+            payload_dwellings != dwelling_count
+            or payload_households != household_count
+            or payload_persons != person_count
+        ):
             raise CensusFrameBuildError("payload_row_count_mismatch")
 
         (work / "partition-index.json").write_text(
@@ -396,6 +455,7 @@ def build_vp_partition_frame(
             "sha256": sha256_file(work / "partition-index.json"),
             "size_bytes": (work / "partition-index.json").stat().st_size,
         }
+        partition_count_field = f"{selection_entity.lower()}_partitions"
         manifest = {
             "contract": FRAME_CONTRACT,
             "frame_release_id": release_id,
@@ -404,8 +464,9 @@ def build_vp_partition_frame(
             "builder": PARTITION_FRAME_BUILDER_VERSION,
             "source_release_id": source_release_label,
             "source": {
-                "kind": "rxdb-extractor VP RADIO partition set",
+                "kind": f"rxdb-extractor VP {selection_entity} partition set",
                 "partition_root_name": source.name,
+                "partition_selection_entity": selection_entity,
                 "partition_count": len(partitions),
                 "partition_index": partition_index_meta,
                 "run_manifest_sha256": (
@@ -420,13 +481,15 @@ def build_vp_partition_frame(
                 "frame_dwelling_id": "vivienda_key",
                 "frame_household_id": "hogar_key",
                 "frame_person_id": "persona_key",
+                "identity_scope": "RADIO",
             },
             "counts": {
                 "dwellings": dwelling_count,
                 "households": household_count,
                 "persons": person_count,
                 "departments": len(donor_rows),
-                "radio_partitions": len(partitions),
+                "partitions": len(partitions),
+                partition_count_field: len(partitions),
             },
             "artifacts": artifacts,
             "payload_policy": "full-source-columns-plus-neutral-frame-ids/v1",
