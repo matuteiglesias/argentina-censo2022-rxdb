@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from .frame import CensusFrameBuildError, build_vp_slice_frame
+from .frame_partitions import build_vp_partition_frame
 from .manifest import build_source_manifest
 from .profile import VP_PROFILE
 from .sources import discover_sources
@@ -30,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     frame = sub.add_parser(
         "frame",
-        help="build research.census-frame/v1 from a validated rxdb-extractor VP slice",
+        help="build research.census-frame/v1 from one validated rxdb-extractor VP slice",
     )
     frame.add_argument("slice", help="validated VP extraction directory")
     frame.add_argument("output_root", help="directory for immutable frame releases")
@@ -39,7 +40,38 @@ def build_parser() -> argparse.ArgumentParser:
         default="unknown",
         help="source corpus label such as april-2025 or july-2025",
     )
+
+    partition_frame = sub.add_parser(
+        "frame-partitions",
+        help="build one research.census-frame/v1 directly from validated RADIO partitions",
+    )
+    partition_frame.add_argument(
+        "partition_root",
+        help="rxdb extract-many output root containing completed RADIO slice directories",
+    )
+    partition_frame.add_argument("output_root", help="directory for immutable frame releases")
+    partition_frame.add_argument(
+        "--source-release-label",
+        default="unknown",
+        help="source corpus label such as april-2025 or july-2025",
+    )
     return parser
+
+
+def _frame_response(destination: Path) -> str:
+    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+    return json.dumps(
+        {
+            "status": "pass",
+            "output": str(destination),
+            "frame_release_id": manifest["frame_release_id"],
+            "contract": manifest["contract"],
+            "counts": manifest["counts"],
+            "geography_derivation_policy": manifest["geography_derivation_policy"],
+        },
+        indent=2,
+        sort_keys=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,23 +99,16 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.output_root),
                 source_release_label=args.source_release_label,
             )
-            manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
-            print(
-                json.dumps(
-                    {
-                        "status": "pass",
-                        "output": str(destination),
-                        "frame_release_id": manifest["frame_release_id"],
-                        "contract": manifest["contract"],
-                        "counts": manifest["counts"],
-                        "geography_derivation_policy": manifest[
-                            "geography_derivation_policy"
-                        ],
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
+            print(_frame_response(destination))
+            return 0
+
+        if args.command == "frame-partitions":
+            destination = build_vp_partition_frame(
+                Path(args.partition_root),
+                Path(args.output_root),
+                source_release_label=args.source_release_label,
             )
+            print(_frame_response(destination))
             return 0
     except (CensusFrameBuildError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}))
