@@ -1,6 +1,8 @@
 import argparse
 import json
+from pathlib import Path
 
+from .frame import CensusFrameBuildError, build_vp_slice_frame
 from .manifest import build_source_manifest
 from .profile import VP_PROFILE
 from .sources import discover_sources
@@ -25,6 +27,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     profile = sub.add_parser("profile", help="print a machine-readable extraction profile")
     profile.add_argument("name", choices=("vp",))
+
+    frame = sub.add_parser(
+        "frame",
+        help="build research.census-frame/v1 from a validated rxdb-extractor VP slice",
+    )
+    frame.add_argument("slice", help="validated VP extraction directory")
+    frame.add_argument("output_root", help="directory for immutable frame releases")
+    frame.add_argument(
+        "--source-release-label",
+        default="unknown",
+        help="source corpus label such as april-2025 or july-2025",
+    )
     return parser
 
 
@@ -32,19 +46,48 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "inspect":
-        sources = discover_sources(args.root)
-        manifest = build_source_manifest(
-            sources,
-            release_label=args.release_label,
-            include_hashes=args.hashes,
-        )
-        print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
-        return 0
+    try:
+        if args.command == "inspect":
+            sources = discover_sources(args.root)
+            manifest = build_source_manifest(
+                sources,
+                release_label=args.release_label,
+                include_hashes=args.hashes,
+            )
+            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+            return 0
 
-    if args.command == "profile":
-        print(json.dumps(VP_PROFILE.to_dict(), indent=2, sort_keys=True))
-        return 0
+        if args.command == "profile":
+            print(json.dumps(VP_PROFILE.to_dict(), indent=2, sort_keys=True))
+            return 0
+
+        if args.command == "frame":
+            destination = build_vp_slice_frame(
+                Path(args.slice),
+                Path(args.output_root),
+                source_release_label=args.source_release_label,
+            )
+            manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+            print(
+                json.dumps(
+                    {
+                        "status": "pass",
+                        "output": str(destination),
+                        "frame_release_id": manifest["frame_release_id"],
+                        "contract": manifest["contract"],
+                        "counts": manifest["counts"],
+                        "geography_derivation_policy": manifest[
+                            "geography_derivation_policy"
+                        ],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+    except (CensusFrameBuildError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}))
+        return 2
 
     parser.print_help()
     return 0
