@@ -6,6 +6,13 @@ APRIL_2025_VP_COUNTS = {
     "PERSONA": 45_618_787,
 }
 
+VP_GEOGRAPHY_COUNTS = {
+    "PROV": 24,
+    "DPTO": 527,
+    "FRAC": 6_540,
+    "RADIO": 66_422,
+}
+
 KNOWN_VARIABLE_ANOMALIES = {
     "PERSONA.HNVUA": "name/alias ambiguity under tested RedEngine 1.1 and 1.3 runtimes",
 }
