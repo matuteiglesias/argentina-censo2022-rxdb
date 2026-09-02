@@ -8,6 +8,7 @@ from .manifest import build_source_manifest
 from .partition_inventory import build_partition_inventory
 from .profile import PROFILES
 from .sources import discover_sources
+from .validation import validate_national_vp_frame
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,6 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-release-label",
         default="unknown",
         help="source corpus label such as april-2025 or july-2025",
+    )
+
+    national = sub.add_parser(
+        "validate-national",
+        help="apply Argentina VP national source/count/partition controls to a frame",
+    )
+    national.add_argument("frame", help="completed research.census-frame/v1 release")
+    national.add_argument(
+        "--source-release-label",
+        required=True,
+        help="registered source control label; currently april-2025",
     )
     return parser
 
@@ -151,6 +163,14 @@ def main(argv: list[str] | None = None) -> int:
                 source_release_label=args.source_release_label,
             )
             print(_frame_response(destination))
+            return 0
+
+        if args.command == "validate-national":
+            result = validate_national_vp_frame(
+                Path(args.frame),
+                source_release_label=args.source_release_label,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
             return 0
     except (CensusFrameBuildError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}))
